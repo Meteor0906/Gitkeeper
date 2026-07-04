@@ -28,7 +28,7 @@ jobs:
         with:
           python-version-file: ".python-version"
 
-      - name: 패키지(라이브러리) 설치
+      - name: 패키지 설치
         run: |
           python -m pip install --upgrade pip 2>&1 | tee -a test-log.txt
           pip install -r requirements.txt 2>&1 | tee -a test-log.txt
@@ -47,7 +47,7 @@ jobs:
 
   analyze-and-notify:
     needs: run-tests
-    if: ${{ failure() && needs.run-tests.result == 'failure' }}
+    if: ${{ always() && needs.run-tests.result == 'failure' }}
     runs-on: ubuntu-latest
 
     defaults:
@@ -110,10 +110,13 @@ jobs:
             exit 1
           fi
 
-          MESSAGE="*테스트 실패 알림 (AI 분석 완료)*
+          MESSAGE=$(cat <<EOF
+          *테스트 실패 알림 (AI 분석 완료)*
           > 로그 분석 결과: ${AI_RESULT}
           > 작성자: ${PR_AUTHOR}
-          > PR 링크: ${PR_URL}"
+          > PR 링크: ${PR_URL}
+          EOF
+          )
 
           jq -n --arg text "$MESSAGE" '{text: $text}' > slack_payload.json
 
