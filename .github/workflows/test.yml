@@ -28,14 +28,23 @@ jobs:
         with:
           python-version-file: ".python-version"
 
-      - name: 패키지(라이브러리) 설치
+      - name: 패키지 설치
         run: |
           python -m pip install --upgrade pip 2>&1 | tee -a test-log.txt
           pip install -r requirements.txt 2>&1 | tee -a test-log.txt
 
-      - name: 테스트 실행 및 로그 저장
+      - name: 현재 파일 구조 확인
         run: |
-          pytest 2>&1 | tee -a test-log.txt
+          pwd
+          ls -la
+          find . -maxdepth 2 -type f
+          python -c "import sys; print(sys.path)"
+
+      - name: 테스트 실행 및 로그 저장
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest 2>&1 | tee -a test-log.txt
 
       - name: 실패 로그 업로드
         if: always()
@@ -47,7 +56,7 @@ jobs:
 
   analyze-and-notify:
     needs: run-tests
-    if: ${{ failure() && needs.run-tests.result == 'failure' }}
+    if: ${{ always() && needs.run-tests.result == 'failure' }}
     runs-on: ubuntu-latest
 
     defaults:
@@ -101,7 +110,6 @@ jobs:
       - name: Slack으로 결과 전송
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          AI_RESULT: ${{ env.AI_RESULT }}
           PR_AUTHOR: ${{ github.actor }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
@@ -110,10 +118,7 @@ jobs:
             exit 1
           fi
 
-          MESSAGE="*테스트 실패 알림 (AI 분석 완료)*
-          > 로그 분석 결과: ${AI_RESULT}
-          > 작성자: ${PR_AUTHOR}
-          > PR 링크: ${PR_URL}"
+          MESSAGE=$(printf "*테스트 실패 알림 (AI 분석 완료)*\n> 로그 분석 결과: %s\n> 작성자: %s\n> PR 링크: %s" "$AI_RESULT" "$PR_AUTHOR" "$PR_URL")
 
           jq -n --arg text "$MESSAGE" '{text: $text}' > slack_payload.json
 
