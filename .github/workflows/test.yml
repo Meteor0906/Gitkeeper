@@ -1,0 +1,122 @@
+name: Gitkeeper
+
+on:
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  run-tests:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: 코드 가져오기
+        uses: actions/checkout@v4
+
+      - name: 테스트 로그 파일 초기화
+        run: |
+          : > test-log.txt
+
+      - name: Python 세팅
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+
+      - name: 패키지(라이브러리) 설치
+        run: |
+          python -m pip install --upgrade pip 2>&1 | tee -a test-log.txt
+          pip install -r requirements.txt 2>&1 | tee -a test-log.txt
+
+      - name: 테스트 실행 및 로그 저장
+        run: |
+          pytest 2>&1 | tee -a test-log.txt
+
+      - name: 실패 로그 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-logs
+          path: test-log.txt
+          if-no-files-found: warn
+
+  analyze-and-notify:
+    needs: run-tests
+    if: ${{ failure() && needs.run-tests.result == 'failure' }}
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: 로그 다운로드
+        uses: actions/download-artifact@v4
+        with:
+          name: error-logs
+
+      - name: AI 로그 분석
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "GROQ_API_KEY가 설정되어 있지 않습니다." >&2
+            exit 1
+          fi
+
+          jq -n --rawfile log test-log.txt '{
+            model: "llama-3.1-8b-instant",
+            messages: [
+              {
+                role: "system",
+                content: "너는 시니어 개발자야. 주어진 테스트 실패 로그를 분석해서 원인을 간결하게 요약해줘. 그리고 이게 즉각적인 조치가 필요한 심각한 오류인지 [심각], [주의], [사소] 중 하나로 분류해서 맨 앞에 붙여줘. 형식: [분류] 원인 요약"
+              },
+              {
+                role: "user",
+                content: $log
+              }
+            ],
+            temperature: 0.2
+          }' > payload.json
+
+          curl -sS --fail https://api.groq.com/openai/v1/chat/completions \
+            -H "Authorization: Bearer $GROQ_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d @payload.json > ai_response.json
+
+          AI_RESULT=$(jq -r '.choices[0].message.content // "AI 응답을 파싱하지 못했습니다."' ai_response.json)
+
+          DELIM="EOF_$(date +%s%N)"
+          {
+            echo "AI_RESULT<<$DELIM"
+            printf '%s\n' "$AI_RESULT"
+            echo "$DELIM"
+          } >> "$GITHUB_ENV"
+
+      - name: Slack으로 결과 전송
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          AI_RESULT: ${{ env.AI_RESULT }}
+          PR_AUTHOR: ${{ github.actor }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_WEBHOOK_URL이 설정되어 있지 않습니다." >&2
+            exit 1
+          fi
+
+          MESSAGE="*테스트 실패 알림 (AI 분석 완료)*
+          > 로그 분석 결과: ${AI_RESULT}
+          > 작성자: ${PR_AUTHOR}
+          > PR 링크: ${PR_URL}"
+
+          jq -n --arg text "$MESSAGE" '{text: $text}' > slack_payload.json
+
+          curl -sS --fail -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            --data @slack_payload.json
